@@ -18,7 +18,7 @@ fn fixture(ctx: &egui::Context) -> (App, tokio::sync::mpsc::UnboundedReceiver<Rg
         desktop: desktop::Desktop::disabled(), preferences: desktop::Preferences::default(), startup_enabled:false, options_message:String::new(), force_quit:false,
         snap: Arc::new(Mutex::new(snap)), logo, hist: HashMap::new(), fan_max: HashMap::new(), last_seq: 0, tab: Tab::Monitor,
         rgb: RgbUi { tx, status: Arc::new(Mutex::new(RgbStatus { connected: true, devices, message: "Connected · 4 devices".into(), ..Default::default() })), settings: RgbSettings::default(), last_sent: None, applied: None, applied_gpu: false, react_to_gpu: false, devices_initialized: false },
-        fans: FanUi { tx: fan_tx, status: Arc::new(Mutex::new(FanStatus { online: true, message: "Connected · 3 available fan channels".into(), fans: fan_devices })), profile: FanProfile::Balanced, source: FanSource::Cpu, manual: 55.0, custom: FanProfile::Custom.points() },
+        fans: FanUi { initial_profile_loaded:false, tx: fan_tx, status: Arc::new(Mutex::new(FanStatus { online: true, message: "Connected · 3 available fan channels".into(), fans: fan_devices })), profile: FanProfile::Balanced, source: FanSource::Cpu, manual: 55.0, custom: FanProfile::Custom.points() },
     }, rx, fan_rx)
 }
 
@@ -148,4 +148,14 @@ fn native_close_hides_only_with_working_tray_and_explicit_quit_wins() {
         assert_eq!(commands.iter().any(|c| matches!(c,egui::ViewportCommand::CancelClose)),expected_hide);
         assert_eq!(commands.iter().any(|c| matches!(c,egui::ViewportCommand::Visible(false))),expected_hide);
     }
+}
+
+#[test]
+fn restored_curve_populates_editor_without_sending_new_commands() {
+    let ctx=egui::Context::default();let (mut app,_rgb,fan_rx)=fixture(&ctx);
+    let points=[(30.,35.),(50.,60.),(70.,85.),(90.,100.)];
+    app.fans.status.lock().unwrap().fans[0].mode=FanMode::Curve{profile:FanProfile::Custom,source:FanSource::GpuMax,points};
+    let _=ctx.run(egui::RawInput::default(),|ctx|app.draw(ctx));
+    assert_eq!(app.fans.profile,FanProfile::Custom);assert_eq!(app.fans.source,FanSource::GpuMax);assert_eq!(app.fans.custom,points);
+    assert!(fan_rx.try_recv().is_err());
 }

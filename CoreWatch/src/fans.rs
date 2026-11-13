@@ -7,12 +7,14 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex, mpsc::{self, Sender, Receiver}};
 use std::time::{Duration, Instant};
 use serde_json::Value;
+use serde::{Serialize,Deserialize};
+use crate::fan_store::{FanStore, valid_mode};
 use crate::sensors::Snapshot;
 
 const HOST: &str = "127.0.0.1:8085";
 const MIN_DUTY: f32 = 35.0;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Profile { Quiet, Balanced, Performance, Custom }
 impl Profile {
     pub const ALL: [Self; 4] = [Self::Quiet, Self::Balanced, Self::Performance, Self::Custom];
@@ -24,9 +26,9 @@ impl Profile {
         Self::Custom => [(30., 35.), (50., 50.), (70., 75.), (85., 100.)],
     }}
 }
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Source { Cpu, GpuMax }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Mode { Automatic, Manual(f32), Curve { profile: Profile, source: Source, points: [(f32,f32);4] } }
 #[derive(Clone, Debug)]
 pub struct FanDevice { pub id: String, pub name: String, pub mode: Mode, pub last_duty: Option<f32> }
@@ -99,6 +101,10 @@ fn reset_owned(owned: &mut HashSet<String>) {
     for id in owned.drain() { let _ = set(&id, None); }
 }
 fn worker(rx: Receiver<Command>, status: Arc<Mutex<FanStatus>>, snap: Arc<Mutex<Snapshot>>, ctx: eframe::egui::Context) {
+    let path = FanStore::path();
+    let (mut saved, mut persistence_error) = match path.as_ref().map_err(|e|e.clone()).and_then(|p|FanStore::load(p)) {
+        Ok(saved)=>(saved,None),Err(e)=>(FanStore::default(),Some(e)),
+    };
     let mut controls: HashMap<String, Mode> = HashMap::new();
     let mut last_duty: HashMap<String, f32> = HashMap::new();
     let mut owned = HashSet::new();
@@ -106,39 +112,57 @@ fn worker(rx: Receiver<Command>, status: Arc<Mutex<FanStatus>>, snap: Arc<Mutex<
     let mut last_scan = Instant::now() - Duration::from_secs(10);
     let mut last_tick = Instant::now();
     loop {
+        let mut save_needed=false;
         match rx.recv_timeout(Duration::from_millis(250)) {
             Ok(Command::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => { reset_owned(&mut owned); break; }
-            Ok(Command::ResetAll) => { reset_owned(&mut owned); controls.clear(); last_duty.clear(); }
+            Ok(Command::ResetAll) => { reset_owned(&mut owned); controls.clear(); last_duty.clear(); saved.controls.clear(); save_needed=true; }
             Ok(Command::Refresh) => last_scan = Instant::now() - Duration::from_secs(10),
             Ok(Command::SetMany(ids, mode)) => {
                 for id in ids {
-                    if found.iter().any(|(known, _)| known == &id) && matches!(mode, Mode::Curve { .. }) {
+                    if found.iter().any(|(known, _)| known == &id) && matches!(mode, Mode::Curve { .. }) && valid_mode(&mode) {
+                        let name=&found.iter().find(|(known,_)|known==&id).unwrap().1;
+                        saved.remember(&id,name,&mode);save_needed=true;
                         controls.insert(id, mode.clone());
                     }
                 }
             }
             Ok(Command::SetMode(id, mode)) => {
-                if found.iter().any(|(f,_)| f == &id) {
+                if found.iter().any(|(f,_)| f == &id) && valid_mode(&mode) {
                     if matches!(mode, Mode::Automatic) {
                         // Explicitly restore even if a previous operation failed.
                         match set(&id, None) {
-                            Ok(()) => { controls.remove(&id); owned.remove(&id); last_duty.remove(&id); }
+                            Ok(()) => { controls.remove(&id); owned.remove(&id); last_duty.remove(&id); saved.controls.remove(&id); save_needed=true; }
                             Err(e) => { if let Ok(mut s) = status.lock() { s.message = format!("Couldn't restore {id}: {e}"); } }
                         }
-                    } else { controls.insert(id, mode); }
+                    } else {
+                        let name=&found.iter().find(|(known,_)|known==&id).unwrap().1;
+                        saved.remember(&id,name,&mode);save_needed=true;controls.insert(id,mode);
+                    }
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
+        if save_needed {
+            persistence_error=path.as_ref().map_err(|e|e.clone()).and_then(|p|saved.save(p)).err().map(|e|format!("Fan settings could not be saved: {e}"));
+        }
         if last_scan.elapsed() >= Duration::from_secs(5) {
             last_scan = Instant::now();
             match discover() {
-                Ok(list) => { found = list; if let Ok(mut s) = status.lock() { s.online = true; s.message = if found.is_empty() { "Connected: no supported fan control sensors (pumps excluded).".into() } else { format!("Connected: {} available controls. Overrides are opt-in.", found.len()) }; } }
+                Ok(list) => {
+                    // Sensor indices/names can change after hardware replacement. Do not
+                    // apply an old override to a newly named channel with the same ID.
+                    controls.retain(|id,_|list.iter().any(|(fid,name)|fid==id && saved.matching(id,name).is_some()));
+                    last_duty.retain(|id,_|controls.contains_key(id));
+                    for (id,name) in &list {
+                        if let Some(mode)=saved.matching(id,name) {controls.entry(id.clone()).or_insert(mode);}
+                    }
+                    found = list; if let Ok(mut s) = status.lock() { s.online = true; s.message = if found.is_empty() { "Connected: no supported fan control sensors (pumps excluded).".into() } else { format!("Connected: {} available controls. Overrides are opt-in.", found.len()) }; } }
                 Err(e) => {
-                    // Fail safe: if server disappears, forget overrides; hardware/driver may
+                    // Pause writes while the server is unavailable; forget the last duty so
+                    // saved modes are resent on reconnect. Hardware/driver may
                     // retain their last PWM value, so alert user to check the system.
                     if let Ok(mut s) = status.lock() { s.online = false; s.message = format!("{e}. Check fan speeds / restore in LHM or BIOS."); }
-                    found.clear();
+                    found.clear(); last_duty.clear();
                 }
             }
         }
@@ -168,6 +192,7 @@ fn worker(rx: Receiver<Command>, status: Arc<Mutex<FanStatus>>, snap: Arc<Mutex<
             if let Some(e) = failed { if let Ok(mut s) = status.lock() { s.message = e; } }
         }
         if let Ok(mut s) = status.lock() {
+            if let Some(e)=&persistence_error { s.message=e.clone(); }
             s.fans = found.iter().map(|(id,name)| FanDevice { id: id.clone(), name: name.clone(), mode: controls.get(id).cloned().unwrap_or(Mode::Automatic), last_duty: last_duty.get(id).copied() }).collect();
         }
         ctx.request_repaint();

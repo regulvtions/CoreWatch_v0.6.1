@@ -4,6 +4,7 @@ mod desktop;
 mod rgb;
 mod sensors;
 mod fans;
+mod fan_store;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -61,6 +62,7 @@ struct RgbUi {
 }
 
 struct FanUi {
+    initial_profile_loaded: bool,
     tx: FanSender<FanCmd>,
     status: Arc<Mutex<FanStatus>>,
     profile: FanProfile,
@@ -127,6 +129,7 @@ impl App {
             last_seq: 0,
             tab: Tab::Monitor,
             fans: FanUi {
+                initial_profile_loaded: false,
                 tx: fan_tx, status: fan_status, profile: FanProfile::Balanced,
                 source: FanSource::Cpu, manual: 55.0, custom: FanProfile::Custom.points(),
             },
@@ -199,6 +202,18 @@ impl App {
         let snap = self.snap.lock().map(|g| g.clone()).unwrap_or_default();
         let rgb_status = self.rgb.status.lock().map(|g| g.clone()).unwrap_or_default();
         let fan_status = self.fans.status.lock().map(|g| g.clone()).unwrap_or_default();
+        if !self.fans.initial_profile_loaded && fan_status.online && !fan_status.fans.is_empty() {
+            self.fans.initial_profile_loaded = true;
+            if let Some(fan) = fan_status.fans.iter().find(|f| !matches!(f.mode,FanMode::Automatic)) {
+                match &fan.mode {
+                    FanMode::Curve {profile,source,points} => {
+                        self.fans.profile=*profile;self.fans.source=*source;self.fans.custom=*points;
+                    },
+                    FanMode::Manual(duty)=>self.fans.manual=*duty,
+                    FanMode::Automatic=>{},
+                }
+            }
+        }
         self.ingest(&snap);
         self.sync_rgb(&snap, &rgb_status);
 
@@ -708,6 +723,8 @@ fn lighting_devices(ui: &mut Ui, s: &mut RgbSettings, status: &RgbStatus) {
 // ---------------------------------------------------------------------------
 impl App {
     fn fans_tab(&mut self, ui: &mut Ui, snap: &Snapshot, status: &FanStatus) {
+        ui.label(RichText::new("Applied fan settings are saved and restored when CoreWatch starts.").size(12.0).color(DIM));
+        ui.add_space(8.0);
         card(ui, |ui| {
             section_title(ui, "Fan control connection");
             ui.label(RichText::new(&status.message).color(if status.online { GOOD } else { DIM }));

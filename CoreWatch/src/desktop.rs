@@ -1,5 +1,8 @@
 //! Optional Windows integration. Creating the tray does not enable autostart.
 use eframe::egui;
+#[cfg(windows)]
+#[path="tray_menu.rs"]
+mod tray_menu;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
@@ -33,6 +36,8 @@ impl Preferences {
 pub struct Desktop {
     #[cfg(windows)]
     _tray: Option<tray_icon::TrayIcon>,
+    #[cfg(windows)]
+    _menu: Option<tray_menu::TrayMenu>,
     quit: Arc<AtomicBool>,
     pub tray_available: bool,
     pub error: String,
@@ -40,6 +45,7 @@ pub struct Desktop {
 impl Desktop {
     pub fn disabled() -> Self { Self {
         #[cfg(windows)] _tray:None,
+        #[cfg(windows)] _menu:None,
         quit:Arc::new(AtomicBool::new(false)), tray_available:false, error:String::new(),
     } }
     pub fn quit_requested(&self) -> bool { self.quit.load(Ordering::SeqCst) }
@@ -47,33 +53,26 @@ impl Desktop {
         let ctx = &cc.egui_ctx;
         let mut desktop=Self::disabled();
         #[cfg(windows)] {
-            use tray_icon::{TrayIconBuilder, TrayIconEvent, MouseButton, Icon};
-            use tray_icon::menu::{Menu,MenuItem,MenuEvent};
+            use tray_icon::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState, Icon};
             let result=(|| -> Result<tray_icon::TrayIcon,String> {
                 let window = NativeWindow::from_creation_context(cc)?;
-                let menu=Menu::new();
-                let show=MenuItem::new("Open CoreWatch",true,None);
-                let quit=MenuItem::new("Quit CoreWatch",true,None);
-                menu.append(&show).map_err(|e|e.to_string())?;
-                menu.append(&quit).map_err(|e|e.to_string())?;
-                let show_id=show.id().clone(); let quit_id=quit.id().clone();
+                let menu=tray_menu::TrayMenu::new()?;
+                let popup=menu.handle();
                 let icon=Icon::from_rgba(include_bytes!("../assets/corewatch.rgba").to_vec(),256,256).map_err(|e|e.to_string())?;
                 let tray=TrayIconBuilder::new().with_icon(icon).with_tooltip("CoreWatch")
-                    .with_menu(Box::new(menu)).build().map_err(|e|e.to_string())?;
-                let menu_ctx=ctx.clone(); let quitting=desktop.quit.clone();
-                MenuEvent::set_event_handler(Some(move |event:MenuEvent| {
-                    if event.id==show_id { window.show(&menu_ctx); }
-                    else if event.id==quit_id {
-                        quitting.store(true,Ordering::SeqCst);
-                        // Wake the actual HWND before requesting normal eframe shutdown.
-                        // Queued egui commands alone cannot wake a hidden Win32 window.
-                        window.close(&menu_ctx);
-                    }
-                }));
-                let tray_ctx=ctx.clone();
+                    .build().map_err(|e|e.to_string())?;
+                let tray_ctx=ctx.clone(); let quitting=desktop.quit.clone();
                 TrayIconEvent::set_event_handler(Some(move |event:TrayIconEvent| {
                     if matches!(event,TrayIconEvent::DoubleClick {button:MouseButton::Left,..}) { window.show(&tray_ctx); }
+                    else if matches!(event,TrayIconEvent::Click {button:MouseButton::Right,button_state:MouseButtonState::Up,..}) {
+                        match popup.show() {
+                            1=>window.show(&tray_ctx),
+                            2=>{quitting.store(true,Ordering::SeqCst);window.close(&tray_ctx);},
+                            _=>{}
+                        }
+                    }
                 }));
+                desktop._menu=Some(menu);
                 Ok(tray)
             })();
             match result { Ok(tray)=>{desktop._tray=Some(tray);desktop.tray_available=true;},Err(e)=>desktop.error=format!("Tray unavailable: {e}") }

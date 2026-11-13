@@ -35,6 +35,12 @@ Choose a Quiet, Balanced, Performance, or Custom fan curve. Use CPU or GPU tempe
 - Manual control for supported channels.
 - An option to return discovered controls to automatic operation.
 
+Applied fan curves and manual settings are saved per channel and restored when
+CoreWatch starts and LibreHardwareMonitor becomes available. Enable Windows
+sign-in launch to resume them after reboot. Returning a channel to automatic
+control removes its saved override; **Restore all to firmware** clears all saved
+fan overrides. CoreWatch must be running to drive its curves.
+
 ### Lighting
 
 Control compatible devices through OpenRGB with Static, Breathing, Rainbow, Temperature, and Off effects.
