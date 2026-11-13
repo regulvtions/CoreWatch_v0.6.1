@@ -8,6 +8,14 @@
 
 ---
 
+## Download
+
+**[Download CoreWatch for Windows](https://github.com/regulvtions/CoreWatch_v0.6.1/releases/latest)**
+
+Download the latest release, extract the ZIP file, and run `corewatch.exe`.
+
+---
+
 ## Features
 
 ### Overview
