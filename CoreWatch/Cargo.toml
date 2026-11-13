@@ -1,0 +1,35 @@
+[package]
+name = "corewatch"
+version = "0.6.1"
+edition = "2021"
+description = "Lightweight CPU/GPU temperature, fan speed and RGB control for Windows 11"
+
+[dependencies]
+# UI
+eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts", "x11"] }
+
+# Sensors
+nvml-wrapper = "0.10"          # NVIDIA GPUs (loads nvml.dll from the driver at runtime)
+sysinfo = "0.32"               # CPU name + load
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# RGB (talks to the OpenRGB SDK server)
+openrgb = { path = "vendor/openrgb-0.1.2" }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[target.'cfg(windows)'.dependencies]
+wmi = "0.14"
+tray-icon = "0.19"
+raw-window-handle = "0.6"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+winreg = "0.52"
+
+[build-dependencies]
+winres = "0.1"
