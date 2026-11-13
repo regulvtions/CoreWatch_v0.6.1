@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/corewatch.png" alt="CoreWatch logo" width="112" />
+  <img src="./corewatch.png" alt="CoreWatch Logo" width="180">
   <h1>CoreWatch</h1>
   <p><strong>Your hardware. Your cooling. Your color.</strong></p>
   <p>A native Rust desktop app for Windows, bringing hardware monitoring, fan curves, and RGB control into one clean workspace.</p>
